@@ -1,0 +1,208 @@
+import random
+import math
+from typing import List, Tuple, Optional
+
+# -----------------------------
+# Utility: Distance / Fitness
+# -----------------------------
+def route_distance(route: List[int], distance_matrix: List[List[float]]) -> float:
+    """
+    Total cyclic route distance (returns to starting city).
+    route = permutation of city indices, e.g., [0,2,1,3]
+    """
+    n = len(route)
+    total = 0.0
+    for i in range(n):
+        a = route[i]
+        b = route[(i + 1) % n]  # wrap to start
+        total += distance_matrix[a][b]
+    return total
+
+def fitness_of(route: List[int], distance_matrix: List[List[float]]) -> float:
+    d = route_distance(route, distance_matrix)
+    # Avoid division by zero (shouldn't happen with positive distances)
+    return 1.0 / d if d > 0 else float("inf")
+
+# -----------------------------
+# Step 8: Gene Expression
+# (For TSP, genotype == phenotype: permutation -> route)
+# -----------------------------
+def express_gene_to_route(gene: List[int]) -> List[int]:
+    return gene  # identity mapping for TSP
+
+# -----------------------------
+# Step 5: Selection (Roulette Wheel)
+# -----------------------------
+def roulette_wheel_selection(population: List[List[int]],
+                             fitnesses: List[float]) -> List[int]:
+    total_fit = sum(fitnesses)
+    # Fallback if all fitnesses are zero (shouldn't happen here)
+    if total_fit == 0.0:
+        return random.choice(population)
+    pick = random.uniform(0, total_fit)
+    current = 0.0
+    for ind, f in zip(population, fitnesses):
+        current += f
+        if current >= pick:
+            return ind
+    return population[-1]
+
+# -----------------------------
+# Step 6: Crossover (Ordered Crossover - OX)
+# -----------------------------
+def ordered_crossover(parent1: List[int], parent2: List[int]) -> List[int]:
+    n = len(parent1)
+    start, end = sorted(random.sample(range(n), 2))
+    child = [None] * n
+
+    # Copy slice from parent1
+    child[start:end] = parent1[start:end]
+
+    # Fill remaining from parent2 in order
+    ptr = end
+    for city in parent2:
+        if city not in child:
+            if ptr == n:
+                ptr = 0
+            child[ptr] = city
+            ptr += 1
+    return child
+
+# -----------------------------
+# Step 7: Mutation (Swap)
+# -----------------------------
+def swap_mutation(route: List[int], mutation_rate: float) -> List[int]:
+    child = route[:]
+    if random.random() < mutation_rate:
+        i, j = random.sample(range(len(child)), 2)
+        child[i], child[j] = child[j], child[i]
+    return child
+
+# -----------------------------
+# Step 3: Initialize Population
+# -----------------------------
+def initialize_population(num_cities: int, population_size: int) -> List[List[int]]:
+    return [random.sample(range(num_cities), num_cities)
+            for _ in range(population_size)]
+
+# -----------------------------
+# Step 9: Main GEA loop for TSP
+# -----------------------------
+def gea_tsp(distance_matrix: List[List[float]],
+            population_size: int = 100,
+            generations: int = 500,
+            mutation_rate: float = 0.10,
+            crossover_rate: float = 0.90,
+            elitism_k: int = 2,
+            seed: Optional[int] = 42) -> Tuple[List[int], float]:
+    """
+    Solve TSP using a Gene Expression Algorithm.
+    Returns (best_route, best_distance).
+    """
+    if seed is not None:
+        random.seed(seed)
+
+    num_cities = len(distance_matrix)
+    population = initialize_population(num_cities, population_size)
+
+    # Evaluate initial population
+    fitnesses = [fitness_of(express_gene_to_route(ind), distance_matrix)
+                 for ind in population]
+
+    # Track best
+    best_idx = max(range(population_size), key=lambda i: fitnesses[i])
+    best_route = population[best_idx][:]
+    best_distance = route_distance(best_route, distance_matrix)
+
+    for gen in range(1, generations + 1):
+        # ---- Elitism: take top-k directly into next population ----
+        ranked = sorted(range(population_size),
+                        key=lambda i: fitnesses[i],
+                        reverse=True)
+        elites = [population[i][:] for i in ranked[:elitism_k]]
+
+        # ---- Build next generation ----
+        next_pop: List[List[int]] = elites[:]
+        while len(next_pop) < population_size:
+            # Step 5: Selection
+            p1 = roulette_wheel_selection(population, fitnesses)
+            p2 = roulette_wheel_selection(population, fitnesses)
+
+            # Step 6: Crossover
+            if random.random() < crossover_rate:
+                child = ordered_crossover(p1, p2)
+            else:
+                child = p1[:]
+
+            # Step 7: Mutation
+            child = swap_mutation(child, mutation_rate)
+
+            next_pop.append(child)
+
+        population = next_pop
+
+        # Step 4: Evaluate fitness of new population
+        fitnesses = [fitness_of(express_gene_to_route(ind), distance_matrix)
+                     for ind in population]
+
+        # Update global best
+        gen_best_idx = max(range(population_size), key=lambda i: fitnesses[i])
+        gen_best_route = population[gen_best_idx]
+        gen_best_distance = route_distance(gen_best_route, distance_matrix)
+        if gen_best_distance < best_distance:
+            best_distance = gen_best_distance
+            best_route = gen_best_route[:]
+
+        # Optional: progress log
+        if gen % 50 == 0 or gen == 1 or gen == generations:
+            print(f"Gen {gen:4d} | Best distance so far: {best_distance:.4f}")
+
+    return best_route, best_distance
+
+# -----------------------------
+# Helper: Build a distance matrix from 2D coordinates (demo)
+# -----------------------------
+def euclidean_distance_matrix(points_2d: List[Tuple[float, float]]) -> List[List[float]]:
+    n = len(points_2d)
+    dist = [[0.0]*n for _ in range(n)]
+    for i in range(n):
+        x1, y1 = points_2d[i]
+        for j in range(n):
+            if i == j: 
+                continue
+            x2, y2 = points_2d[j]
+            dx = x1 - x2
+            dy = y1 - y2
+            dist[i][j] = math.hypot(dx, dy)
+    return dist
+
+# -----------------------------
+# Example usage / quick test
+# -----------------------------
+if __name__ == "__main__":
+    # Example 1: fixed small distance matrix (5 cities)
+    # distance_matrix = [
+    #     [0, 2, 9, 10, 7],
+    #     [1, 0, 6, 4, 3],
+    #     [15, 7, 0, 8, 3],
+    #     [6, 3, 12, 0, 11],
+    #     [9, 7, 5, 6, 0]
+    # ]
+
+    # Example 2: random points in 2D plane (visualizable case)
+    random.seed(1)
+    points = [(random.uniform(0, 100), random.uniform(0, 100)) for _ in range(15)]
+    distance_matrix = euclidean_distance_matrix(points)
+
+    best_route, best_distance = gea_tsp(
+        distance_matrix,
+        population_size=120,
+        generations=600,
+        mutation_rate=0.12,
+        crossover_rate=0.90,
+        elitism_k=3,
+        seed=7
+    )
+
+    print("\nBest route (order of city indices):", best_route)
+    print("Best tour length (distance):", round(best_distance, 4))
