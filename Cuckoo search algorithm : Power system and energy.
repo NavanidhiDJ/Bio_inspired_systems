@@ -1,0 +1,129 @@
+import numpy as np
+import math
+
+
+# Generator data: cost coefficients a, b, c, min and max power limits
+generators = [
+    {'a': 500, 'b': 5.3, 'c': 0.004, 'Pmin': 150, 'Pmax': 600},
+    {'a': 400, 'b': 5.5, 'c': 0.006, 'Pmin': 100, 'Pmax': 400},
+    {'a': 200, 'b': 5.8, 'c': 0.009, 'Pmin': 50,  'Pmax': 200}
+]
+
+total_demand = 850  # MW
+num_generators = len(generators)
+num_nests = 30
+max_iter = 100
+pa = 0.25  # discovery rate
+
+def fuel_cost(P, gen):
+    return gen['a'] + gen['b'] * P + gen['c'] * P**2
+
+def is_feasible(power_outputs):
+    # Check limits
+    for i, P in enumerate(power_outputs):
+        if P < generators[i]['Pmin'] or P > generators[i]['Pmax']:
+            return False
+    # Check power balance
+    if abs(np.sum(power_outputs) - total_demand) > 1e-3:
+        return False
+    return True
+
+def penalty(power_outputs):
+    # Penalty for constraint violations
+    penalty_val = 0
+    # Power limits penalty
+    for i, P in enumerate(power_outputs):
+        if P < generators[i]['Pmin']:
+            penalty_val += 1e5 * (generators[i]['Pmin'] - P)**2
+        elif P > generators[i]['Pmax']:
+            penalty_val += 1e5 * (P - generators[i]['Pmax'])**2
+    # Power balance penalty
+    diff = np.sum(power_outputs) - total_demand
+    penalty_val += 1e6 * (diff)**2
+    return penalty_val
+
+def fitness(power_outputs):
+    cost = 0
+    for i, P in enumerate(power_outputs):
+        cost += fuel_cost(P, generators[i])
+    cost += penalty(power_outputs)
+    return cost
+
+def levy_flight(Lambda=1.5, size=1):
+    sigma = (math.gamma(1 + Lambda) * np.sin(np.pi * Lambda / 2) /
+             (math.gamma((1 + Lambda) / 2) * Lambda * 2 ** ((Lambda - 1) / 2))) ** (1 / Lambda)
+    u = np.random.normal(0, sigma, size=size)
+    v = np.random.normal(0, 1, size=size)
+    step = u / (np.abs(v) ** (1 / Lambda))
+    return step
+
+
+def generate_feasible_solution():
+    # Randomly allocate power to generators respecting limits and total demand
+    P = np.zeros(num_generators)
+    remaining = total_demand
+    for i in range(num_generators - 1):
+        Pmin = generators[i]['Pmin']
+        Pmax = min(generators[i]['Pmax'], remaining - sum(g['Pmin'] for g in generators[i+1:]))
+        P[i] = np.random.uniform(Pmin, Pmax)
+        remaining -= P[i]
+    # Last generator takes remaining power
+    P[-1] = remaining
+    # If last generator violates limits, adjust randomly (simple fix)
+    if P[-1] < generators[-1]['Pmin']:
+        P[-1] = generators[-1]['Pmin']
+    elif P[-1] > generators[-1]['Pmax']:
+        P[-1] = generators[-1]['Pmax']
+    return P
+
+def cuckoo_search_eld():
+    nests = np.array([generate_feasible_solution() for _ in range(num_nests)])
+    fitnesses = np.array([fitness(nest) for nest in nests])
+
+    best_index = np.argmin(fitnesses)
+    best_nest = nests[best_index].copy()
+    best_fitness = fitnesses[best_index]
+
+    for t in range(max_iter):
+        for i in range(num_nests):
+            step = levy_flight(size=num_generators)
+            new_solution = nests[i] + step * np.random.randn(num_generators)
+
+            # Ensure limits and power balance
+            new_solution = np.clip(new_solution, 
+                                   [g['Pmin'] for g in generators],
+                                   [g['Pmax'] for g in generators])
+            # Adjust power to match demand (simple proportional scaling)
+            diff = np.sum(new_solution) - total_demand
+            new_solution -= diff / num_generators
+
+            new_fitness = fitness(new_solution)
+
+            if new_fitness < fitnesses[i]:
+                nests[i] = new_solution
+                fitnesses[i] = new_fitness
+
+                if new_fitness < best_fitness:
+                    best_fitness = new_fitness
+                    best_nest = new_solution.copy()
+
+        # Abandon fraction pa of worst nests
+        abandon_count = int(pa * num_nests)
+        worst_indices = np.argsort(fitnesses)[-abandon_count:]
+        for idx in worst_indices:
+            nests[idx] = generate_feasible_solution()
+            fitnesses[idx] = fitness(nests[idx])
+
+        # Update best solution if improved
+        current_best_idx = np.argmin(fitnesses)
+        if fitnesses[current_best_idx] < best_fitness:
+            best_fitness = fitnesses[current_best_idx]
+            best_nest = nests[current_best_idx].copy()
+
+    return best_nest, best_fitness
+
+# Run the algorithm
+best_solution, best_cost = cuckoo_search_eld()
+
+print("Optimal Power Outputs (MW):", best_solution)
+print("Minimum Fuel Cost:", best_cost)
