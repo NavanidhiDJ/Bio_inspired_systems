@@ -1,0 +1,116 @@
+import numpy as np
+
+# Objective function (example): 
+# Let's simulate a function that depends on multiple routing parameters.
+def network_routing_cost(x):
+    # x is a vector representing routing parameters
+    # For demonstration, use a nonlinear function:
+    return np.sum(x**2) + 10 * np.sum(np.sin(x))
+
+# GWO Implementation with Alpha, Beta, Delta, Omega wolves
+class GreyWolfOptimizer:
+    def __init__(self, obj_func, dim, bounds, num_wolves=30, max_iter=100):
+        self.obj_func = obj_func
+        self.dim = dim
+        self.lb, self.ub = bounds
+        self.num_wolves = num_wolves
+        self.max_iter = max_iter
+
+        # Initialize wolf positions
+        self.positions = np.random.uniform(self.lb, self.ub, (num_wolves, dim))
+        
+        # Initialize alpha, beta, delta, omega
+        self.alpha_pos = np.zeros(dim)
+        self.alpha_score = float('inf')
+
+        self.beta_pos = np.zeros(dim)
+        self.beta_score = float('inf')
+
+        self.delta_pos = np.zeros(dim)
+        self.delta_score = float('inf')
+
+        self.omega_positions = np.zeros((num_wolves - 3, dim))
+        self.omega_scores = np.ones(num_wolves - 3) * float('inf')
+
+    def update_wolves(self):
+        # Evaluate fitness of all wolves and update alpha, beta, delta, omega
+        fitness_scores = np.array([self.obj_func(pos) for pos in self.positions])
+
+        # Sort wolves by fitness scores (ascending)
+        sorted_indices = np.argsort(fitness_scores)
+        sorted_positions = self.positions[sorted_indices]
+        sorted_scores = fitness_scores[sorted_indices]
+
+        # Alpha, Beta, Delta
+        self.alpha_pos = sorted_positions[0]
+        self.alpha_score = sorted_scores[0]
+
+        self.beta_pos = sorted_positions[1]
+        self.beta_score = sorted_scores[1]
+
+        self.delta_pos = sorted_positions[2]
+        self.delta_score = sorted_scores[2]
+
+        # Omega wolves (remaining wolves)
+        self.omega_positions = sorted_positions[3:]
+        self.omega_scores = sorted_scores[3:]
+
+    def optimize(self):
+        for t in range(self.max_iter):
+            for i in range(self.num_wolves):
+                fitness = self.obj_func(self.positions[i])
+
+                # Update the positions based on alpha, beta, delta, omega wolves
+                a = 2 - t * (2 / self.max_iter)  # a decreases linearly from 2 to 0
+
+                for j in range(self.dim):
+                    r1, r2 = np.random.rand(), np.random.rand()
+                    A1 = 2 * a * r1 - a
+                    C1 = 2 * r2
+                    D_alpha = abs(C1 * self.alpha_pos[j] - self.positions[i][j])
+                    X1 = self.alpha_pos[j] - A1 * D_alpha
+
+                    r1, r2 = np.random.rand(), np.random.rand()
+                    A2 = 2 * a * r1 - a
+                    C2 = 2 * r2
+                    D_beta = abs(C2 * self.beta_pos[j] - self.positions[i][j])
+                    X2 = self.beta_pos[j] - A2 * D_beta
+
+                    r1, r2 = np.random.rand(), np.random.rand()
+                    A3 = 2 * a * r1 - a
+                    C3 = 2 * r2
+                    D_delta = abs(C3 * self.delta_pos[j] - self.positions[i][j])
+                    X3 = self.delta_pos[j] - A3 * D_delta
+
+                    # Omega wolf influence
+                    r1, r2 = np.random.rand(), np.random.rand()
+                    A4 = 2 * a * r1 - a
+                    C4 = 2 * r2
+                    omega_idx = np.random.randint(self.num_wolves - 3)
+                    D_omega = abs(C4 * self.omega_positions[omega_idx][j] - self.positions[i][j])
+                    X4 = self.omega_positions[omega_idx][j] - A4 * D_omega
+
+                    # Update wolf position
+                    self.positions[i][j] = (X1 + X2 + X3 + X4) / 4
+
+                # Boundary check
+                self.positions[i] = np.clip(self.positions[i], self.lb, self.ub)
+
+            # Evaluate fitness of all wolves and update alpha, beta, delta, omega
+            self.update_wolves()
+
+            # Optionally print progress
+            if (t+1) % 10 == 0 or t == 0:
+                print(f"Iteration {t+1}, Best Fitness: {self.alpha_score:.4f}")
+
+        return self.alpha_pos, self.alpha_score
+
+# Problem setup
+dimension = 5  # For example, 5 routing parameters
+bounds = (-10, 10)  # Limits on parameters
+
+gwo = GreyWolfOptimizer(network_routing_cost, dimension, bounds, num_wolves=20, max_iter=100)
+best_solution, best_cost = gwo.optimize() 
+
+print("\nBest routing parameters found:", best_solution)
+print("Minimum routing cost:", best_cost)
