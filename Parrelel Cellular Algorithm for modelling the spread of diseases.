@@ -1,0 +1,148 @@
+import numpy as np
+from multiprocessing import Process, Pipe
+import matplotlib.pyplot as plt
+from matplotlib import animation
+import time
+
+GRID_SIZE = (200, 200)
+P_INFECT = 0.35
+P_RECOVER = 0.02
+NEIGHBORHOOD = 'moore'
+PROCESSES = 4
+TIMESTEPS = 400
+INITIAL_INFECTED = 10
+EXTERNAL_INFECTION_RATE = 0.0001
+
+SUSCEPTIBLE = 0
+INFECTED = 1
+RECOVERED = 2
+
+def init_grid(rows, cols, initial_infected=10):
+    grid = np.zeros((rows, cols), dtype=np.uint8)
+    rs = np.random.randint(0, rows, size=initial_infected)
+    cs = np.random.randint(0, cols, size=initial_infected)
+    grid[rs, cs] = INFECTED
+    return grid
+
+def neighbor_kernel(neighborhood='moore'):
+    if neighborhood == 'moore':
+        return np.array([[1,1,1],[1,0,1],[1,1,1]], dtype=np.uint8)
+    else:
+        return np.array([[0,1,0],[1,0,1],[0,1,0]], dtype=np.uint8)
+
+def count_infected_neighbors(subgrid, kernel):
+    r, c = subgrid.shape
+    out = np.zeros((r-2, c-2), dtype=np.uint8)
+    for dr in range(3):
+        for dc in range(3):
+            if kernel[dr, dc]:
+                out += (subgrid[dr:r-2+dr, dc:c-2+dc] == INFECTED)
+    return out
+
+def worker(child_conn, rows_slice, cols, kernel, params):
+    p_infect, p_recover, ext_rate = params
+    while True:
+        msg = child_conn.recv()
+        if msg == 'STOP':
+            break
+        halo = msg
+        infected_neighbors = count_infected_neighbors(halo, kernel)
+        inner = halo[1:-1, 1:-1]
+        next_inner = inner.copy()
+        susceptible_mask = (inner == SUSCEPTIBLE)
+        k = infected_neighbors.astype(np.float64)
+        prob_infection = 1.0 - np.power((1.0 - p_infect), k)
+        randvals = np.random.random(size=prob_infection.shape)
+        new_infections = susceptible_mask & (randvals < prob_infection)
+        ext_rand = np.random.random(size=prob_infection.shape)
+        new_infections |= susceptible_mask & (ext_rand < ext_rate)
+        next_inner[new_infections] = INFECTED
+        infected_mask = (inner == INFECTED)
+        rec_rand = np.random.random(size=infected_mask.shape)
+        recoveries = infected_mask & (rec_rand < p_recover)
+        next_inner[recoveries] = RECOVERED
+        child_conn.send(next_inner)
+
+class ParallelCellularSIR:
+    def __init__(self, rows, cols, p_infect, p_recover, neighborhood='moore', processes=4, external_rate=0.0):
+        self.rows = rows
+        self.cols = cols
+        self.p_infect = p_infect
+        self.p_recover = p_recover
+        self.neighborhood = neighborhood
+        self.kernel = neighbor_kernel(neighborhood)
+        self.processes = min(processes, rows)
+        self.external_rate = external_rate
+        self.grid = init_grid(rows, cols, INITIAL_INFECTED)
+        sizes = [rows // self.processes + (1 if i < rows % self.processes else 0) for i in range(self.processes)]
+        starts = [sum(sizes[:i]) for i in range(self.processes)]
+        ends = [starts[i] + sizes[i] for i in range(self.processes)]
+        self.slices = list(zip(starts, ends))
+        self.parents = []
+        self.workers = []
+        for s, e in self.slices:
+            parent_conn, child_conn = Pipe()
+            p = Process(target=worker, args=(child_conn, (s, e), cols, self.kernel, (self.p_infect, self.p_recover, self.external_rate)))
+            p.daemon = True
+            p.start()
+            self.parents.append(parent_conn)
+            self.workers.append(p)
+
+    def step(self):
+        for i, (s, e) in enumerate(self.slices):
+            top = max(0, s-1)
+            bottom = min(self.rows, e+1)
+            sub = self.grid[top:bottom, :]
+            if top == 0:
+                sub = np.vstack((np.zeros((1, self.cols), dtype=np.uint8), sub))
+            if bottom == self.rows:
+                sub = np.vstack((sub, np.zeros((1, self.cols), dtype=np.uint8)))
+            left_col = self.grid[top:bottom, -1].reshape(-1,1)
+            right_col = self.grid[top:bottom, 0].reshape(-1,1)
+            sub = np.hstack((left_col, sub, right_col))
+            self.parents[i].send(sub)
+        next_grid = np.zeros_like(self.grid)
+        for i, (s, e) in enumerate(self.slices):
+            inner = self.parents[i].recv()
+            next_grid[s:e, :] = inner
+        self.grid = next_grid
+
+    def run(self, timesteps=100, verbose=True, animate=False):
+        if animate:
+            fig, ax = plt.subplots(figsize=(6,6))
+            img = ax.imshow(self.grid, vmin=0, vmax=2, interpolation='nearest')
+            ax.set_title('Parallel Cellular SIR')
+            plt.axis('off')
+            def update(frame):
+                self.step()
+                img.set_data(self.grid)
+                return (img,)
+            anim = animation.FuncAnimation(fig, update, frames=timesteps, interval=50, blit=True)
+            plt.show()
+        else:
+            for t in range(timesteps):
+                self.step()
+                if verbose and (t % max(1, timesteps//10) == 0):
+                    unique, counts = np.unique(self.grid, return_counts=True)
+                    d = dict(zip(unique, counts))
+                    s = d.get(SUSCEPTIBLE, 0)
+                    i = d.get(INFECTED, 0)
+                    r = d.get(RECOVERED, 0)
+                    print(f"t={t}: S={s} I={i} R={r}")
+
+    def stop_workers(self):
+        for p_conn in self.parents:
+            p_conn.send('STOP')
+        for w in self.workers:
+            w.join(timeout=1)
+
+if __name__ == '__main__':
+    np.random.seed(1)
+    rows, cols = GRID_SIZE
+    model = ParallelCellularSIR(rows, cols, P_INFECT, P_RECOVER, NEIGHBORHOOD, PROCESSES, EXTERNAL_INFECTION_RATE)
+    start = time.time()
+    try:
+        model.run(TIMESTEPS, verbose=True, animate=True)
+    finally:
+        model.stop_workers()
+        print('Elapsed:', time.time() - start)
