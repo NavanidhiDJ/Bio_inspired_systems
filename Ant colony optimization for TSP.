@@ -1,0 +1,176 @@
+"""
+Ant Colony Optimization (ACO) for the Travelling Salesman Problem (TSP)
+
+Usage:
+    - Requires: numpy, matplotlib
+    - Run: python3 ant_colony_tsp.py
+
+This script generates a random set of cities, runs ACO, and plots
+the best tour found.
+
+Parameters can be tuned at the top of the file.
+"""
+
+import math
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def euclidean_distance(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+class AntColonyTSP:
+    def __init__(
+        self,
+        cities,
+        num_ants=20,
+        num_iterations=200,
+        alpha=1.0,
+        beta=5.0,
+        rho=0.5,
+        q=100.0,
+        initial_pheromone=1.0,
+    ):
+        self.cities = cities
+        self.n = len(cities)
+        self.num_ants = num_ants
+        self.num_iterations = num_iterations
+        self.alpha = alpha
+        self.beta = beta
+        self.rho = rho
+        self.q = q
+
+        # distance matrix
+        self.dist = np.zeros((self.n, self.n), dtype=float)
+        for i in range(self.n):
+            for j in range(self.n):
+                if i == j:
+                    self.dist[i, j] = 1e-9
+                else:
+                    self.dist[i, j] = euclidean_distance(cities[i], cities[j])
+
+        # pheromone matrix
+        self.pheromone = np.full((self.n, self.n), initial_pheromone, dtype=float)
+
+        # heuristic matrix (eta = 1/d)
+        self.eta = 1.0 / self.dist
+
+        # best solution
+        self.best_tour = None
+        self.best_length = float("inf")
+
+    def _select_next_city(self, current, visited):
+        allowed = [i for i in range(self.n) if i not in visited]
+        if not allowed:
+            return None
+
+        pheromone = np.take(self.pheromone[current], allowed)
+        heuristic = np.take(self.eta[current], allowed)
+
+        numerator = (pheromone ** self.alpha) * (heuristic ** self.beta)
+        if numerator.sum() == 0:
+            # fallback: choose uniformly
+            return random.choice(allowed)
+
+        probs = numerator / numerator.sum()
+        next_city = random.choices(allowed, weights=probs, k=1)[0]
+        return next_city
+
+    def _construct_solutions(self):
+        ants_tours = []
+        ants_lengths = []
+
+        for _ in range(self.num_ants):
+            start = random.randrange(self.n)
+            tour = [start]
+            while len(tour) < self.n:
+                current = tour[-1]
+                next_city = self._select_next_city(current, tour)
+                if next_city is None:
+                    break
+                tour.append(next_city)
+
+            # complete tour (return to start)
+            length = 0.0
+            for i in range(len(tour)):
+                j = (i + 1) % len(tour)
+                length += self.dist[tour[i], tour[j]]
+
+            ants_tours.append(tour)
+            ants_lengths.append(length)
+
+        return ants_tours, ants_lengths
+
+    def _update_pheromones(self, ants_tours, ants_lengths):
+        # evaporate
+        self.pheromone *= (1.0 - self.rho)
+
+        # deposit
+        for tour, length in zip(ants_tours, ants_lengths):
+            contribution = self.q / (length + 1e-12)
+            for i in range(len(tour)):
+                a = tour[i]
+                b = tour[(i + 1) % len(tour)]
+                self.pheromone[a, b] += contribution
+                self.pheromone[b, a] += contribution
+
+    def run(self, verbose=True):
+        for it in range(1, self.num_iterations + 1):
+            ants_tours, ants_lengths = self._construct_solutions()
+
+            # update best
+            for tour, length in zip(ants_tours, ants_lengths):
+                if length < self.best_length:
+                    self.best_length = length
+                    self.best_tour = tour.copy()
+
+            # pheromone update
+            self._update_pheromones(ants_tours, ants_lengths)
+
+            if verbose and (it % max(1, self.num_iterations // 10) == 0):
+                print(f"Iteration {it}/{self.num_iterations} - best length: {self.best_length:.4f}")
+
+        return self.best_tour, self.best_length
+
+
+# --- Example usage ---
+if __name__ == "__main__":
+    random.seed(42)
+    np.random.seed(42)
+
+    # generate random cities (change to your own coordinates if needed)
+    num_cities = 25
+    cities = [(random.random() * 100, random.random() * 100) for _ in range(num_cities)]
+
+    aco = AntColonyTSP(
+        cities,
+        num_ants=50,
+        num_iterations=300,
+        alpha=1.0,
+        beta=5.0,
+        rho=0.4,
+        q=100.0,
+        initial_pheromone=1.0,
+    )
+
+    best_tour, best_length = aco.run(verbose=True)
+
+    print("\nBest length:", best_length)
+    print("Best tour:", best_tour)
+
+    # plot result
+    tour_coords = [cities[i] for i in best_tour] + [cities[best_tour[0]]]
+    xs = [c[0] for c in tour_coords]
+    ys = [c[1] for c in tour_coords]
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(xs, ys, marker="o")
+    for i, (x, y) in enumerate(cities):
+        plt.text(x + 0.8, y + 0.8, str(i), fontsize=9)
+    plt.title(f"ACO TSP - best length: {best_length:.4f}")
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.grid(True)
+    plt.show()
